@@ -1,5 +1,4 @@
 use crate::days::Day;
-use std::collections::VecDeque;
 use std::path::Path;
 
 pub struct Day1(String);
