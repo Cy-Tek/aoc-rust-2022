@@ -33,17 +33,21 @@ impl Day for Day1 {
     }
 
     fn part2(&self) -> String {
-        let mut packs = self
-            .0
+        let mut packs = self.0
             .split("\n\n")
             .map(|pack| {
                 pack.split("\n")
                     .flat_map(|num| num.parse::<usize>())
                     .sum::<usize>()
             })
-            .collect::<VecDeque<_>>();
+            .collect::<Vec<_>>();
 
-        "".to_string()
+        packs.sort();
+        packs.iter()
+            .rev()
+            .take(3)
+            .sum::<usize>()
+            .to_string()
     }
 
     fn day_number(&self) -> usize {

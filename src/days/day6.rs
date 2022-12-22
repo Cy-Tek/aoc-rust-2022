@@ -9,7 +9,7 @@ pub struct Day6 {
 impl Day6 {
     pub fn new<P: AsRef<Path>>(file: P) -> Result<Self, String> {
         std::fs::read_to_string(file)
-            .map(|s| Self { input: s })
+            .map(|s| Self::from_string(&s))
             .map_err(|e| e.to_string())
     }
 
@@ -22,7 +22,7 @@ impl Day6 {
     fn find_marker(&self, marker_length: usize) -> String {
         let chars = self.input.chars().collect::<Vec<char>>();
         for (i, c_window) in chars.windows(marker_length).enumerate() {
-            let mut set: HashSet<&char> = HashSet::from_iter(c_window.into_iter());
+            let set: HashSet<&char> = HashSet::from_iter(c_window.into_iter());
             if set.len() == marker_length {
                 return (i + marker_length).to_string();
             }

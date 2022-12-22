@@ -1,5 +1,4 @@
 mod map;
-mod list;
 
 use std::str::FromStr;
 
