@@ -1,42 +1,51 @@
-use std::alloc::{alloc, Layout};
+use std::alloc::{alloc, handle_alloc_error, Layout};
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::{alloc, ptr};
+use std::{alloc};
 
 pub struct FileSystem {
-    root: *mut Item,
-    current: *mut Item,
+    root: Option<NonNull<Item>>,
+    current: Option<NonNull<Item>>,
     _marker: PhantomData<Item>,
 }
 
 impl Drop for FileSystem {
     fn drop(&mut self) {
-        let root = match unsafe { self.root.as_mut() } {
-            Some(item) => item,
-            None => return,
-        };
-
-        root.clear();
-
-        unsafe {
-            alloc::dealloc(self.root as *mut u8, Layout::for_value(root))
+        let layout = Layout::new::<Item>();
+        if let Some(root) = self.root {
+            unsafe {
+                root.as_ptr().drop_in_place();
+                alloc::dealloc(root.as_ptr().cast(), layout);
+            };
         }
-
-        println!("I've been dropped");
     }
 }
 
 pub enum Item {
     Directory {
-        parent: *mut Item,
+        parent: Option<NonNull<Self>>,
         name: String,
         children: Vec<NonNull<Item>>,
     },
     File {
-        parent: *mut Item,
+        parent: NonNull<Self>,
         name: String,
         size: usize,
     },
+}
+
+impl Drop for Item {
+    fn drop(&mut self) {
+        let Item::Directory { children, ..} = self else { return; };
+        let layout = Layout::new::<Item>();
+
+        while let Some(child) = children.pop() {
+            unsafe {
+                child.as_ptr().drop_in_place();
+                alloc::dealloc(child.as_ptr().cast(), layout);
+            };
+        }
+    }
 }
 
 impl Item {
@@ -64,10 +73,10 @@ impl Item {
         }
     }
 
-    pub fn go_up(&self) -> *mut Item {
+    pub fn go_up(&self) -> Option<NonNull<Self>> {
         match self {
             Item::Directory { parent, .. } => parent.clone(),
-            Item::File { parent, .. } => parent.clone(),
+            Item::File { parent, .. } => Some(parent.clone()),
         }
     }
 
@@ -90,23 +99,23 @@ impl Item {
         }
     }
 
-    pub fn enter(&self, name: &str) -> *mut Item {
+    pub fn enter(&self, name: &str) -> Option<NonNull<Item>> {
         if let Item::Directory { children, .. } = self {
             for child in children {
                 let child_ref = unsafe { child.as_ref() };
                 if child_ref.name() == name && child_ref.is_dir() {
-                    return child.as_ptr();
+                    return Some(child.clone());
                 }
             }
         }
 
-        ptr::null_mut()
+        None
     }
 
-    fn clear(self) {
-        let Item::Directory { mut children, .. } = self else { return };
-        while let Some(mut child) = children.pop() {
-            child.clear();
+    fn clear(&mut self) {
+        let Item::Directory { ref mut children, .. } = self else { return };
+        while let Some(child) = children.pop() {
+            unsafe { child.as_ptr().drop_in_place() };
             unsafe { alloc::dealloc(child.as_ptr() as *mut u8, Layout::for_value(child.as_ref())) }
         }
     }
@@ -115,76 +124,65 @@ impl Item {
 impl FileSystem {
     pub fn new() -> Self {
         Self {
-            root: ptr::null_mut(),
-            current: ptr::null_mut(),
+            root: None,
+            current: None,
             _marker: PhantomData {},
         }
     }
 
     pub fn cd(&mut self, name: &str) -> Result<(), String> {
         unsafe {
-            let current = match self.current.as_mut() {
+            let mut current = match self.current {
                 Some(current) => current,
                 None => return Ok(self.insert_dir(name)),
             };
 
-            if name == ".." {
-                let new_ptr = current.go_up();
-                if !new_ptr.is_null() {
-                    self.current = new_ptr;
-                }
-            }
-
-            let new_ptr = current.enter(name);
-            if !new_ptr.is_null() {
-                self.current = new_ptr;
-            }
+            self.current = match name {
+                ".." => current.as_mut().go_up(),
+                _ => current.as_ref().enter(name),
+            };
         }
 
         Ok(())
     }
 
     pub fn insert_dir(&mut self, name: &str) {
-        let current = unsafe { self.current.as_mut() };
+        let dir = Item::Directory {
+            name: name.into(),
+            parent: self.current.clone(),
+            children: vec![],
+        };
 
-        match current {
+        match self.current {
             None => unsafe {
-                let dir = Item::Directory {
-                    name: name.into(),
-                    parent: ptr::null_mut(),
-                    children: vec![],
+                let layout = Layout::new::<Item>();
+                let Some(ptr) = NonNull::new(alloc(layout).cast::<Item>()) else {
+                    handle_alloc_error(layout);
                 };
 
-                let layout = Layout::for_value(&dir);
-                self.current = alloc(layout) as *mut Item;
-                self.current.write(dir);
+                ptr.as_ptr().write(dir);
+                self.current = Some(ptr);
                 self.root = self.current.clone();
             },
-            Some(current_item) => {
-                let dir = Item::Directory {
-                    name: name.into(),
-                    parent: self.current,
-                    children: vec![],
-                };
-                current_item.insert(dir)
-            }
+            Some(mut current_item) => unsafe { current_item.as_mut().insert(dir) },
         }
     }
 
     pub fn insert_file(&mut self, name: &str, size: usize) {
-        let current = unsafe { self.current.as_mut() };
+        let Some(current) = self.current.as_mut() else {
+            self.insert_dir("/".into());
+            self.insert_file(name, size);
+            return;
+        };
+
         let item = Item::File {
             size,
             name: name.into(),
-            parent: self.current,
+            parent: current.clone(),
         };
 
-        match current {
-            None => unsafe {
-                self.insert_dir("/".into());
-                (*self.current).insert(item);
-            },
-            Some(current_item) => current_item.insert(item),
+        unsafe {
+            current.as_mut().insert(item);
         }
     }
 
@@ -193,7 +191,7 @@ impl FileSystem {
 
         unsafe {
             if let Some(item) = self.root.as_ref() {
-                Self::search_all(item, &cb, &mut result);
+                Self::search_all(item.as_ref(), &cb, &mut result);
             }
         }
 
@@ -201,7 +199,7 @@ impl FileSystem {
     }
 
     pub fn size(&self) -> usize {
-        unsafe { self.root.as_ref().map_or(0, |root| root.size()) }
+        unsafe { self.root.as_ref().map_or(0, |root| root.as_ref().size()) }
     }
 
     fn search_all<'a>(root: &'a Item, cb: &impl Fn(&Item) -> bool, out: &mut Vec<&'a Item>) {
