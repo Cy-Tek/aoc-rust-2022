@@ -111,14 +111,6 @@ impl Item {
 
         None
     }
-
-    fn clear(&mut self) {
-        let Item::Directory { ref mut children, .. } = self else { return };
-        while let Some(child) = children.pop() {
-            unsafe { child.as_ptr().drop_in_place() };
-            unsafe { alloc::dealloc(child.as_ptr() as *mut u8, Layout::for_value(child.as_ref())) }
-        }
-    }
 }
 
 impl FileSystem {
